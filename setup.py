@@ -28,7 +28,7 @@ setup(
                       #"git+ssh://git@gitlab.bitnomica.com:vidacle-team/turmeric.git@master#egg=turmeric"
                   ],
     tests_require=[],
-    dependency_links = ["git+ssh://git@gitlab.bitnomica.com/vidacle-team/turmeric.git#egg=turmeric-0.1"],
+    dependency_links = ["git+ssh://git@gitlab.bitnomica.com/vidacle-team/turmeric.git#egg=turmeric"],
     setup_requires = [ "setuptools-git>=0.3"],
     test_suite="lifeshare",
     entry_points = """\
