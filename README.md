@@ -5,7 +5,7 @@ PyPlyne is a easy but powerful deployment engine. The philosophy behind PyPlyne 
 
 
 Usage:
-``` sh
+```
 deploy --help
 ```
 
