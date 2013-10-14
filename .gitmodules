@@ -1,0 +1,3 @@
+[submodule "vendor/turmeric"]
+	path = vendor/turmeric
+	url = git@gitlab.bitnomica.com:vidacle-team/turmeric.git
