@@ -1,8 +1,5 @@
 #!/usr/bin/env python
 
-from ConfigParser import SafeConfigParser, NoSectionError, NoOptionError
-from mako.lookup import TemplateLookup, Template
-
 import shutil
 import os, sys
 import subprocess
@@ -13,7 +10,12 @@ import shlex
 import distutils.dir_util
 
 from cStringIO import StringIO
+
+from .parser import HierarchicalConfigParser
+from ConfigParser import SafeConfigParser
+
 logger = logging.getLogger("pyplyne")
+
 
 def _make_dir(dest, path):
     _pths = path.split(os.path.sep)
@@ -26,128 +28,6 @@ def _make_dir(dest, path):
 
 logging.addLevelName(logging.INFO+5, "INFO(stderr)")
 
-class HierarchicalConfigParser(object):
-    def __init__(self, files, defaults = {}):
-        self._files = files
-        self._parsers = []
-        self._paths = {}
-        self.defaults = defaults
-        for _file in files:
-            _dflts = {'here':os.path.dirname(os.path.abspath(_file)),
-                }
-            _dflts.update(defaults)
-            parser = SafeConfigParser(_dflts)
-            parser.read([_file])
-            self._parsers.append(parser)
-            self._paths[parser] = os.path.dirname(os.path.abspath(_file))
-
-    @property
-    def path_hierarchy(self):
-        return [self._paths[parser] for parser in reversed(self._parsers) ]
-        
-    def sections(self):
-        secs = []
-        for parser in self._parsers:
-            secs.extend(parser.sections())
-        return list(set(secs))
-
-    def get(self, section, option, raw=False, vars=None):
-        for parser in reversed(self._parsers):
-            val = parser.get(section, option, raw=raw, vars= vars)
-            if val:
-                return val
-        return None
-        
-    def get_tuples(self, section, option, raw=False, vars=None):
-        ret = []
-        for parser in reversed(self._parsers):
-            try:
-                val = parser.get(section, option, raw=raw, vars = vars)
-            except (NoOptionError, NoSectionError):
-                continue
-            if val:
-                ret.append((self._paths[parser], val))
-                
-        return ret
-        
-    def getpath(self, section, option, raw=False, vars=None):
-        for parser in reversed(self._parsers):
-            if vars is None:
-                vars = {}
-            #vars['here'] = self._paths[parser]
-            val = parser.get(section, option, raw=raw, vars= vars)
-            if val:
-                if not val.startswith("/"):
-                    return os.path.join(self._paths[parser], val)
-                return val
-        return None
-
-    def getpaths(self, section, option, raw=False, vars=None):
-        for parser in reversed(self._parsers):
-            if vars is None:
-                vars = {}
-            vars['here'] = self._paths[parser]
-            vars['target']
-            val = parser.get(section, option, raw=raw, vars= vars)
-            if val:
-                return [ (_file if not _file.startswith("/") else os.path.join(self._paths[parser], _file)) for _file in val.split()]
-        return None
-
-
-    def write(self, buf):
-        for parser in reversed(self._parsers):
-            _ln = "Configuration file: %s\n" % self._files[self._parsers.index(parser)]
-            buf.write("\n" + ("#" * len(_ln)) +"\n")
-            buf.write(_ln)
-            buf.write("here = %s\n" % self._paths[parser])
-            buf.write("#" * len(_ln) +"\n\n")
-            parser.write(buf)
-                
-    def pretty_print(self, buf):
-        sections = self.sections()
-        default_path = self._paths[self._parsers[0]]
-        def print_sec(sec):
-            print >> buf, "\n[%s]" % sec
-            keys = self.options(sec)
-            for key in keys:
-                values = self.get_tuples(sec, key)
-
-                if len(values) > 1:
-                    print >> buf, "%20s = %s\n" % (key,  "\\\n".join ( [ ( ("%s%s     (here=%s)" % (" "*23, pair[1],pair[0]) ) if pair[0] == default_path else "\t%s" % pair[1]) for pair in values ]))
-                else:
-                    if (values[0][0] == default_path):
-                        print >> buf, "%20s = %s" % (key, values[0][1])
-                    else:
-                        print >> buf, "%20s = %s     (here=%s)" % (key, values[0][1], values[0][0])
-
-        #print_sec("DEFAULT")
-        for sec in sections:
-            print_sec(sec)
-
-    def options(self, section):
-        keys = []
-        for parser in reversed(self._parsers):
-            if parser.has_section(section):
-                for k in parser.options(section):
-                    if k not in keys:
-                        keys.append(k)
-        return keys
-            
-    def items(self, section, raw=False, vars=None):
-        itms = []
-        _vars = self.defaults.copy()
-        _vars.update(vars or {})
-        for parser in reversed(self._parsers):
-            try:
-#                for key,val in parser.items(section, raw=raw, vars=vars):
-                for key in parser._sections[section].keys():
-                    if key != "__name__":
-                        val = parser.get(section, key, raw = raw, vars = _vars)
-                        if key not in [i[0] for i in itms]: # only take value highest in the stack
-                            itms.append((key, val))
-            except (NoSectionError, KeyError):
-                pass
-        return itms
 
 class DeploymentException(Exception):
     def __init__(self, message, underlying = None):
@@ -162,6 +42,7 @@ class DeploymentException(Exception):
 
 class DeploymentAborted(DeploymentException):
     pass
+
     
 class DeployerBase(object):
     commands = ("deploy","test","update","info")
@@ -237,7 +118,7 @@ class DeployerBase(object):
         pprint.pprint(self.replacements)
         
     def deploy(self, test = False):
-        tasks = [ "dirs", "files", "templates", "run_scripts"]
+        tasks = [ "dirs", "files", "run_scripts"]
         self.logger.warn("=" * 60)
         self.logger.warn("Starting Deployment procedure using configuration: %s" % self.deployment)
         self.logger.warn("Target path: %s" % self.target)
@@ -245,7 +126,7 @@ class DeployerBase(object):
         self._run_tasks(tasks)
 
     def update(self, test = False):
-        tasks = [ "dirs", "files", "templates", "run_scripts"]
+        tasks = [ "dirs", "files", "run_scripts"]
         self.logger.warn("=" * 60)
         self.logger.warn("Starting update procedure using configuration: %s" % self.deployment)
         self.logger.warn("Target path: %s" % self.target)
@@ -347,58 +228,6 @@ class DeployBasicFunctionsMixin(object):
                     if not test:
                         shutil.copy( _src , _dst)
 
-    def deploy_templates(self, test = False):
-        #mako = self.environment["templates"].split()
-        mako = self.parser.get_tuples("environment", "templates")
-        replacements = self.replacements.copy()
-        replacements.update(installpath = self.target, deployment = self.environment['deployment'])
-
-        if mako:
-            _pth = "var/cache/mako"
-            _make_dir(self.target, _pth)
-
-        lookup_paths = list(set([os.path.dirname(p) for p in self.parser.path_hierarchy ]))  #[0]] + [ os.path.dirname(p) for p in self.parser.path_hierarchy[1:]]
-        lookup_paths.append(self.target)
-        lookup = TemplateLookup(directories = lookup_paths, module_directory = os.path.join(self.target,_pth))
-        
-        for base, templates_val in mako:
-            templates = templates_val.split()
-            for mako_template in templates:
-                config_section = "template:"+mako_template 
-                local_replacements = replacements.copy()
-
-                __dst =  mako_template
-                if __dst.endswith(".mak"):
-                    __dst = __dst[:-4]
-                _dst = os.path.join(self.target, __dst)
-
-                if config_section in  self.parser.sections():
-                    if self.parser.has_option(config_section, "target"):
-                        __dst = self.parser.get(config_section, "target")
-                        _dst = os.path.join(self.target,__dst)
-                    local_replacements.update(dict(self.parser.items(config_section)))
-
-                base_head, base_tail = os.path.split(base)
-                try:
-                    tmpl = lookup.get_template(os.path.join(base_tail, mako_template) )
-                except:
-                    if mako_template.startswith("/"): # absolute path
-                        tmpl = Template(filename = mako_template)
-                        _, _dst = os.path.split(__dst) 
-                        _dst = os.path.join(self.target, _dst)  # always in root 
-                    else:
-                        raise
-                        
-                _src = tmpl.filename
-
-                self.logger.info("Rendering %s using template %s", _dst, _src)
-                self.logger.debug("replacements: %s", local_replacements)
-                if not test:
-                    with open(_dst,"w") as fp:
-                        fp.write(tmpl.render( **local_replacements ))
-                else:
-                    self.logger.info(tmpl.render(**local_replacements))
-
     def deploy_run_scripts(self,  test = False):
         scripts = self.parser.get_tuples("environment", "scripts")
         for base, scripts_val in scripts:
@@ -414,10 +243,12 @@ from modules.git import DeployGitMixin
 from modules.setuptools import DeploySetuptoolsMixin
 from modules.dbmanage import DeployDBManageMixin
 from modules.supervisor import DeploySupervisorMixin
+from modules.makotemplates import DeployMakoTemplatesMixin
 
 
 class Deployer(DeployerBase, DeployBasicFunctionsMixin, DeployGitMixin,
-               DeploySetuptoolsMixin, DeploySupervisorMixin, DeployDBManageMixin):
+               DeploySetuptoolsMixin, DeploySupervisorMixin, DeployDBManageMixin,
+               DeployMakoTemplatesMixin):
     
     def deploy(self, test = False):
         tasks = [ "dirs", "git_install", "virtualenv", "files", "templates",
@@ -444,8 +275,8 @@ class Deployer(DeployerBase, DeployBasicFunctionsMixin, DeployGitMixin,
 
         
 def main(argv=sys.argv, quiet = False):
-    from optparse import OptionParser
-    #from argparse import ArgumentParser
+    #from optparse import OptionParser
+    from argparse import ArgumentParser
     import traceback
     
     logging.basicConfig(level = logging.INFO)
@@ -454,33 +285,31 @@ def main(argv=sys.argv, quiet = False):
         logger.addHandler(logging.FileHandler("./deployment-%s.log" % local_name))
     except IOError:
         logger.addHandler(logging.FileHandler("/tmp/deployment-%s.log" % local_name))
-        
-    parser = OptionParser()
-    parser.add_option("-c","--config",dest = "config", help = "Deployment configuration file", metavar = "FILE")
-    parser.add_option("-s","--step-by-step",dest = "stepwise", help = "Step by Step processing", default = False)
-    parser.add_option("-d","--dry-run",dest = "dryrun", help = "Do Nothing", default = False)
-    parser.add_option("-v","--verbose", dest = "verbose", help ="Be more verbose")
-#    parser.add_option("-h","--help", dest ="usage", help = "Print usage information")
+
+    parser = ArgumentParser(description="Deploy a service into a destination path.")
+    parser.add_argument("command", metavar = "command", default = "info", help = "The deployment command to run. ('%s') " % "' / '".join(Deployer.commands), choices = Deployer.commands )
+    parser.add_argument("destination", metavar = "destination", default = "/tmp", help = "The target path to deploy in. It does not need to exist, but you should have rights to create it")
+    parser.add_argument("arguments", metavar = "arguments",nargs="*" , help = "Positional arguments to pass on the the command")
     
-    config, args = parser.parse_args()
+    parser.add_argument("-c","--config",dest = "config", help = "Deployment configuration file", metavar = "FILE")
+    parser.add_argument("-s","--step-by-step",dest = "stepwise", help = "Step by Step processing",type=bool, default = False)
+    parser.add_argument("-d","--dry-run",dest = "dryrun", help = "Do Nothing", default = False, type=bool)
+    parser.add_argument("-v","--verbose", dest = "verbose", help ="Be more verbose", type=bool)
+
+    
+    config = parser.parse_args()
     if config.verbose:
         logger.setLevel(logging.DEBUG)
 
-    if  len(args)<1:
+    if not config.command or not config.config:
         parser.print_help()
         sys.exit(0)
 
-    if config.usage:
-        parser.print_usage()
-        sys.exit(0)
         
-    command = args[0]
-    target = args[1] if len(args)>1 else "/tmp"
-
-    deployer = Deployer(config, target)
+    deployer = Deployer(config, config.destination)
 
     try:
-        deployer.perform_command(command, args[2:])
+        deployer.perform_command(config.command, config.arguments)
     except:
         traceback.print_exc()
 
