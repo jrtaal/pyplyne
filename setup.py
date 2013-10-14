@@ -25,6 +25,7 @@ setup(
     zip_safe=False,
     install_requires=["mako" ,
                       "turmeric>=0.1",
+                      "alembic",
                       #"git+ssh://git@gitlab.bitnomica.com:vidacle-team/turmeric.git@master#egg=turmeric"
                   ],
     tests_require=[],

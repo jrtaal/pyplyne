@@ -241,13 +241,13 @@ class DeployBasicFunctionsMixin(object):
 
 from modules.git import DeployGitMixin
 from modules.setuptools import DeploySetuptoolsMixin
-from modules.dbmanage import DeployDBManageMixin
+from modules.turmeric import DeployDatabaseManagementMixin
 from modules.supervisor import DeploySupervisorMixin
 from modules.makotemplates import DeployMakoTemplatesMixin
 
 
 class Deployer(DeployerBase, DeployBasicFunctionsMixin, DeployGitMixin,
-               DeploySetuptoolsMixin, DeploySupervisorMixin, DeployDBManageMixin,
+               DeploySetuptoolsMixin, DeploySupervisorMixin, DeployDatabaseManagementMixin,
                DeployMakoTemplatesMixin):
     
     def deploy(self, test = False):

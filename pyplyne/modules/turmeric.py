@@ -1,4 +1,4 @@
-class DeployDBManageMixin(object):
+class DeployDatabaseManagementMixin(object):
     def deploy_backup_db(self, test = False):
         self._run_command(self.target, ["bin/turmeric", "backup", "backup before deployment"], test = test)
 
