@@ -43,6 +43,8 @@ class DeploymentException(Exception):
 class DeploymentAborted(DeploymentException):
     pass
 
+class DeploymentStepFailed(DeploymentException):
+    pass
     
 class DeployerBase(object):
     commands = ("deploy","test","update","info")
@@ -94,6 +96,9 @@ class DeployerBase(object):
 
         self.logger = logging.getLogger("pyplyne.deployer")
 
+    def progress(self, msg, *args, **kwargs):
+        self.progress("\n * " + message , *args, **kwargs)
+        
     def valid_commands(self):
         for cmd in self.commands:
             yield cmd
@@ -102,7 +107,6 @@ class DeployerBase(object):
                 for command in self.commands:
                     if k.startswith(command + "_") and callable(getattr(self, k)):
                         yield k
-
 
     def perform_command(self, command, args):
         if command in self.valid_commands():
@@ -139,15 +143,25 @@ class DeployerBase(object):
 
     def _run_tasks(self, tasks, test = False):
         for task_name in tasks:
+            
             if self.options.stepwise:               
-                answer = raw_input("%sNext Step: %s. Proceed?" % ( "TEST! " if test else "", task_name))
+                answer = raw_input("%sNext Step: %s. Proceed? (y/N)" % ( "TEST! " if test else "", task_name))
                 if not answer.lower().startswith("y"):
                     raise DeploymentAborted()
 
             task = getattr(self, "deploy_" + task_name)
-            self.logger.info("")
-            self.logger.info("Running task %s", task_name)
-            task(test = test)
+            self.progress("")
+            self.progress("Running task %s", task_name)
+            try:
+                try:
+                    task(test = test)
+                except Exception as e:
+                    raise DeploymentStepFailed(underlying = e)
+            except DeploymentException as e:
+                self.logger.exception("Task %s failed" % task_name)
+                answer = raw_input("Last step failed. Proceed? (y/N)" )
+                if not answer.lower().startswith("y"):
+                    break
 
     def _run_command(self, cwd, cmdline, test = False, **kwargs):
         try:
@@ -158,8 +172,9 @@ class DeployerBase(object):
             raise
             #raise DeploymentException("Runnning External Command failed", underlying=e)
             
-    def _internal_run_command(self, cwd, cmdline, test = False, **kwargs):
-        self.logger.info("** > %s", cmdline if isinstance(cmdline,basestring) else  " ".join([ (str(s) if not " " in s else ("\"%s\"" % s))  for s in cmdline]))
+    def _internal_run_command(self, cwd, cmdline, test = False, expect_returncode = 0, **kwargs):
+        self.logger.info("\n** %s> %s", os.path.abspath(cwd),
+                         cmdline if isinstance(cmdline,basestring) else  " ".join([ (str(s) if not " " in s else ("\"%s\"" % s))  for s in cmdline]))
         if not test:
             if kwargs.get('shell')==True and not isinstance(cmdline, basestring):
                 cmdline = " ".join(cmdline)
@@ -174,20 +189,19 @@ class DeployerBase(object):
                 line = process.stdout.readline()
                 if line == '':
                     break;
-                self.logger.info(line.rstrip())
+                self.progress(line.rstrip())
             
-            if process.returncode > 1 :
+            if process.returncode != expect_returncode :
                 self.logger.error("Process returned %s", process.returncode)
                 print stderr.getvalue()
-                raise DeploymentException("An error occurred in subprocess '%s'. Please see the logs." % " ".join(cmdline))
+                raise DeploymentStepFailed("An error occurred in subprocess '%s'. Please see the logs." % " ".join(cmdline))
             else:
-                self.logger.info("Process returned %s", process.returncode)
+                self.progress("Process returned %s", process.returncode)
             errtxt = stderr.getvalue()
             if errtxt:
                 self.logger.error("Stderr output:\n" + errtxt)
 
-class DeployBasicFunctionsMixin(object):
-    
+class DeployBasicFunctionsMixin(object):   
 
     def deploy_dirs(self,  test = False):
         dirs = self.parser.get_tuples("environment","dirs")
@@ -219,12 +233,12 @@ class DeployBasicFunctionsMixin(object):
                         _dst = _tgt
 
                 if os.path.isdir(_src):
-                    self.logger.info("Copying subtree of %s to %s", _src , _dst)
+                    self.progress("Copying subtree of %s to %s", _src , _dst)
                     # copy subtree
                     #shutil.copytree(_src, _dst)
                     distutils.dir_util.copy_tree(_src,_dst)
                 else:
-                    self.logger.info("Copying %s to %s", _src , _dst)
+                    self.progress("Copying %s to %s", _src , _dst)
                     if not test:
                         shutil.copy( _src , _dst)
 
@@ -235,9 +249,10 @@ class DeployBasicFunctionsMixin(object):
                 _opts = self.parser.items("script:" + script)
                 _call = dict(_opts)['call']
                 _call_list = shlex.split(_call)
-                self.logger.info("Calling script %s in %s", script, self.target)
+                self.progress("Calling script %s in %s", script, self.target)
                 if not test:
                     self._run_command(self.target, _call_list)
+
 
 from modules.git import DeployGitMixin
 from modules.setuptools import DeploySetuptoolsMixin

@@ -47,10 +47,10 @@ class DeployMakoTemplatesMixin(object):
                         
                 _src = tmpl.filename
 
-                self.logger.info("Rendering %s using template %s", _dst, _src)
+                self.progress("Rendering %s using template %s", _dst, _src)
                 self.logger.debug("replacements: %s", local_replacements)
                 if not test:
                     with open(_dst,"w") as fp:
                         fp.write(tmpl.render( **local_replacements ))
                 else:
-                    self.logger.info(tmpl.render(**local_replacements))
+                    self.progress(tmpl.render(**local_replacements))
