@@ -10,7 +10,7 @@ import distutils.dir_util
 
 from cStringIO import StringIO
 
-from .parser import HierarchicalConfigParser
+from parser import HierarchicalConfigParser
 from ConfigParser import SafeConfigParser
 
 logger = logging.getLogger("pyplyne")
@@ -38,7 +38,16 @@ class DeploymentAborted(DeploymentException):
 class DeploymentStepFailed(DeploymentException):
     default_message = "Deployment step failed"
     pass
+
+class DeploymentStepSkipped(DeploymentException):
+    pass
+
+class DeploymentStepSkippedByUser(DeploymentStepSkipped):
+    pass
     
+class DeploymentStepSkippedForTesting(DeploymentStepSkipped):
+    pass
+
 class DeployerBase(object):
     commands = ("deploy","test","update","info")
 
@@ -78,10 +87,7 @@ class DeployerBase(object):
         self.deployment = _parsers[0].get("environment","deployment")
 
         self.parser  =  HierarchicalConfigParser(configs, dict(target = target, deployment = self.deployment))
-        #parser = SafeConfigParser()
-        #parser.read(configs)
-        #self.parser = parser
-        
+       
         self.environment = dict(self.parser.items("environment"))
         self.replacements = dict(self.parser.items("replace"))
         self.replacements['target'] = target
@@ -135,41 +141,62 @@ class DeployerBase(object):
         self.deploy( test = True)
 
     def _run_tasks(self, tasks, test = False):
-        skip = False
         for task_name in tasks:
-            if not skip:
-
-                task = getattr(self, "deploy_" + task_name)
-
-                self.progress("Running task %s", task_name)
-                try:
-                    task(test = test)
-                except Exception as e:
-                    if self.options.verbose:
-                        self.logger.exception("Task %s failed", task_name)
-                    else:
-                        self.logger.error("Task %s failed: %s", task_name, e)
-                    answer = raw_input("\nLast step failed. Proceed? ( y/N/s(kip) ) " )
-                    if answer.lower().startswith("s"):
-                        skip = True
-                        continue
-                    if not answer.lower().startswith("y"):
-                        if not isinstance(e, DeploymentException):
-                            e = DeploymentException(underlying = e)
-                        raise e
-                    continue
-
-            skip = False
-
-
             if self.options.stepwise:               
                 answer = raw_input("%sNext Step: %s. Proceed? ( Y/n/s(kip) ) " % ( "TEST! " if test else "", task_name))
                 if answer.lower().startswith("s"):
-                    skip = True
                     continue
                 if answer.lower().startswith("n"):
                     raise DeploymentAborted()
-                skip = False
+
+
+            task = getattr(self, "deploy_" + task_name)
+
+            self.progress("Running task %s", task_name)
+            try:
+                task(test = test)
+            except Exception as e:
+                if self.options.verbose:
+                    self.logger.exception("Task %s failed", task_name)
+                else:
+                    self.logger.error("Task %s failed: %s", task_name, e)
+                answer = raw_input("\nLast step failed. Proceed? ( y/N/s(kip) ) " )
+                if answer.lower().startswith("s"):
+                    continue
+                if not answer.lower().startswith("y"):
+                    if not isinstance(e, DeploymentException):
+                        e = DeploymentException(underlying = e)
+                    raise e
+
+    def _run_sub_tasks(self, task_name, argument_sets, test = False):
+        for task_args, task_kwargs in argument_sets:
+            if self.options.stepwise:               
+                answer = raw_input("%sNext task: %s (%s). Proceed? ( Y/n/s(kip) ) " % ( "TEST! " if test else "", task_name), argument_set)
+                if answer.lower().startswith("s"):
+                    continue
+                if answer.lower().startswith("n"):
+                    raise DeploymentAborted()
+
+
+            task = getattr(self, "deploy_" + task_name)
+
+            self.progress("Running task %s (%s, %s)", task_name, ", ".join(task_args), task_kwargs)
+            try:
+                if not test:
+                    task(*task_args, **task_kwargs)
+            except Exception as e:
+                if self.options.verbose:
+                    self.logger.exception("Task %s failed", task_name)
+                else:
+                    self.logger.error("Task %s failed: %s", task_name, e)
+                answer = raw_input("\nLast subtask failed. Proceed with next subtask? ( y/N/s(kip) ) " )
+                if answer.lower().startswith("s"):
+                    continue
+                if not answer.lower().startswith("y"):
+                    if not isinstance(e, DeploymentException):
+                        e = DeploymentException(underlying = e)
+                    raise e
+        
                     
     def _run_command(self, cwd, cmdline, test = False, **kwargs):
         try:
@@ -189,7 +216,9 @@ class DeployerBase(object):
 
                 
             stderr = StringIO()
-            process = subprocess.Popen(cmdline , stdin = subprocess.PIPE,
+            env = os.environ.copy()
+            env['PATH'] = ":".join( env.get('PATH').split(":") + [ os.path.join(self.target,"bin") ]) 
+            process = subprocess.Popen(cmdline , stdin = subprocess.PIPE, env = env,
                                        stdout = subprocess.PIPE, stderr = subprocess.STDOUT, cwd = cwd, **kwargs )
 
 
@@ -220,6 +249,7 @@ class DeployerBase(object):
                 logger.info("Creating directory %s", _pth)
                 os.mkdir(_pth )
 
+                
 class DeployBasicFunctionsMixin(object):   
 
     def deploy_dirs(self,  test = False):
@@ -230,7 +260,7 @@ class DeployBasicFunctionsMixin(object):
             for dir in dir_val.split():
                 if not test:
                     self._make_dir(self.target, dir)
-            
+
     def deploy_files(self,  test = False):
         #copy = self.environment["files"].split()
         copy = self.parser.get_tuples("environment","files")
@@ -267,10 +297,18 @@ class DeployBasicFunctionsMixin(object):
             for script in scripts_val.split():
                 _opts = self.parser.items("script:" + script)
                 _call = dict(_opts)['call']
-                _call_list = shlex.split(_call)
-                self.progress("Calling script %s in %s", script, self.target)
-                if not test:
-                    self._run_command(self.target, _call_list)
+                _pwd = dict(_opts).get('pwd', self.target)
+                if ";" in _call:
+                    if not test:
+                        self._run_command(_pwd, _call, shell = True)
+                else:
+                    
+                    _call_list = shlex.split(_call)
+
+                    self.progress("Calling script %s in %s", script, _pwd)
+                
+                    if not test:
+                        self._run_command(_pwd, _call_list)
 
 
 from modules.git import DeployGitMixin
@@ -278,6 +316,7 @@ from modules.setuptools import DeploySetuptoolsMixin
 from modules.turmeric import DeployDatabaseManagementMixin
 from modules.supervisor import DeploySupervisorMixin
 from modules.makotemplates import DeployMakoTemplatesMixin
+
 
 
 class Deployer(DeployerBase, DeployBasicFunctionsMixin, DeployGitMixin,
@@ -294,7 +333,6 @@ class Deployer(DeployerBase, DeployBasicFunctionsMixin, DeployGitMixin,
                   "git_checkout", "files", "templates",
                   "setup_py_build", "setup_py_install", "pip_install", "run_scripts", "migrate_db", "online"]
         self._run_tasks(tasks, test=test)
-
 
     def init_system(self, test = False):
         tasks = ["install_init_script", "install_nginx_conf"]
@@ -314,14 +352,15 @@ def main(argv=sys.argv, quiet = False):
     import traceback
     import datetime
     import random
-    #logging.basicConfig(level = logging.INFO, format = "%(message)s")
-    #local_name = ''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(6))
-    local_name = datetime.datetime.utcnow().isoformat()
+    #datestr = ''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(6))
+    datestr = datetime.datetime.utcnow().isoformat()
 
     try:
-        logger.addHandler(logging.FileHandler("./deployment-%s.log" % local_name))
+        logname = "./deployment-%s.log" % datestr
+        logger.addHandler(logging.FileHandler(logname))
     except IOError:
-        logger.addHandler(logging.FileHandler("/tmp/deployment-%s.log" % local_name))
+        logname = "/tmp/deployment-%s.log" % datestr
+        logger.addHandler(logging.FileHandler(logname))
 
     so = logging.StreamHandler(sys.stdout)
     so.setFormatter(logging.Formatter("%(message)s"))
@@ -346,8 +385,7 @@ def main(argv=sys.argv, quiet = False):
     if not config.command or not config.config:
         parser.print_help()
         sys.exit(0)
-
-        
+       
     deployer = Deployer(config, config.destination)
 
     try:
@@ -357,5 +395,5 @@ def main(argv=sys.argv, quiet = False):
         if config.verbose:
             traceback.print_exc()
 
-if __name__ == "__main__":
-    main(sys.argv, quiet=False)
+    print "The log was saved to %s" % logname
+            

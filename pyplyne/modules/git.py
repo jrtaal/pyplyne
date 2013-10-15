@@ -38,6 +38,6 @@ class DeployGitMixin(object):
             self._run_command(cwd, _call, test=test, shell=False )
             _call = [ "git", "fetch" ,"--tags"]
             self._run_command(cwd, _call, test=test, shell=False )
-            _call = [ "git", "checkout", "-b", local_name, branch]
+            _call = [ "git", "checkout", branch]
             self._run_command(cwd, _call, test=test, shell=False)
 
