@@ -1,6 +1,6 @@
 import mako
 from mako.lookup import TemplateLookup, Template
-
+import os
 
 class DeployMakoTemplatesMixin(object):
     def deploy_templates(self, test = False):
@@ -11,7 +11,7 @@ class DeployMakoTemplatesMixin(object):
 
         if mako:
             _pth = "var/cache/mako"
-            _make_dir(self.target, _pth)
+            self._make_dir(self.target, _pth)
 
         lookup_paths = list(set([os.path.dirname(p) for p in self.parser.path_hierarchy ]))  #[0]] + [ os.path.dirname(p) for p in self.parser.path_hierarchy[1:]]
         lookup_paths.append(self.target)
@@ -48,7 +48,7 @@ class DeployMakoTemplatesMixin(object):
                 _src = tmpl.filename
 
                 self.progress("Rendering %s using template %s", _dst, _src)
-                self.logger.debug("replacements: %s", local_replacements)
+                self.logger.debug("Replacements: %s", local_replacements)
                 if not test:
                     with open(_dst,"w") as fp:
                         fp.write(tmpl.render( **local_replacements ))

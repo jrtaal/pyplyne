@@ -1,4 +1,6 @@
 import random
+import string
+import os,sys
 
 class DeployGitMixin(object):
     def deploy_git_install(self,  test = False):
