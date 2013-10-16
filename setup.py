@@ -8,7 +8,7 @@ def read(fname):
     
 setup(
     name = "pyplyne",
-    version = "0.1",
+    version = "1.1",
     author = "Jacco Taal",
     author_email = "jacco@bitnomica.com",
     description = ("""PyPlyne is a easy but powerful deployment engine. The philosophy behind PyPlyne is that git checkout
