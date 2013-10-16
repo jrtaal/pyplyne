@@ -31,10 +31,12 @@ class HierarchicalConfigParser(object):
 
     def get(self, section, option, raw=False, vars=None):
         for parser in reversed(self._parsers):
-            val = parser.get(section, option, raw=raw, vars= vars)
-            if val:
-                return val
-        return None
+            try:
+                return  parser.get(section, option, raw=raw, vars= vars)
+            except NoOptionError:
+                pass
+                
+        raise NoOptionError
         
     def get_tuples(self, section, option, raw=False, vars=None):
         ret = []
@@ -102,6 +104,19 @@ class HierarchicalConfigParser(object):
         for sec in sections:
             print_sec(sec)
 
+    def has_option(self, section, option):
+        for parser in self._parsers:
+            if parser.has_option(section, option):
+                return True
+        return False
+        
+            
+    def has_section(self, section):
+        for parser in self._parsers:
+            if parser.has_section(section):
+                return True
+        return False
+        
     def options(self, section):
         keys = []
         for parser in reversed(self._parsers):

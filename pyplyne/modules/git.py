@@ -16,7 +16,7 @@ class DeployGitMixin(object):
             self.progress("Installing %s (branch %s) in %s", uri, branch, target)
             cwd = os.path.join(self.target, target)
             _call = [ "git","clone"] +  (["-b" , branch] if branch else []) + [ uri, cwd]                            
-            self._run_command(self.target, _call, test=test, shell=False)
+            self.run_command(self.target, _call, test=test, shell=False)
 
 
     def deploy_git_checkout(self,  test = False):
@@ -35,9 +35,9 @@ class DeployGitMixin(object):
             self.progress("Updating %s in %s to branch %s (%s) from %s", uri, self.target, branch, local_name, cwd)
 
             _call = [ "git", "fetch" ]
-            self._run_command(cwd, _call, test=test, shell=False )
+            self.run_command(cwd, _call, test=test, shell=False )
             _call = [ "git", "fetch" ,"--tags"]
-            self._run_command(cwd, _call, test=test, shell=False )
+            self.run_command(cwd, _call, test=test, shell=False )
             _call = [ "git", "checkout", branch]
-            self._run_command(cwd, _call, test=test, shell=False)
+            self.run_command(cwd, _call, test=test, shell=False)
 

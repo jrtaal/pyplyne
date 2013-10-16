@@ -48,17 +48,69 @@ class DeploymentStepSkippedByUser(DeploymentStepSkipped):
 class DeploymentStepSkippedForTesting(DeploymentStepSkipped):
     pass
 
-class DeployerBase(object):
-    commands = ("deploy","test","update","info")
 
-    def __init__(self, options, target = None):
-        self.options = options
+def camelcaser(string):
+    out = ""
+    _prevc = ""
+    nextupper = True
+    for char in string:
+        if char in "_-:/,.+=\\[]{}'\"":
+            nextupper = True
+            continue
+        if nextupper:
+            char = char.upper()
+        out += char
+        nextupper = False
+    return out
+    
+class DeployerBase(object):
+    commands = ("deploy", "test", "update", "info")
+
+    workflows = dict(
+        deploy =  [ "dirs", "files", "run_scripts"],
+        update =  [ "dirs", "files", "run_scripts"],
+        test = []
+    )
+
+    def __new__(cls, options, target):
         if os.path.isdir(options.config):
             options.config = os.path.join(options.config, "deployment.ini")
         else:
             options.config =  os.path.abspath(options.config)
 
-        _config = options.config
+        parser = HierarchicalConfigParser(cls.get_configs(options.config), defaults = dict(target = target))
+        deployment = parser.get("environment", "deployment")
+        modules = []
+        if parser.has_option("environment" ,"modules"):
+            modules = parser.get("environment", "modules")
+            if modules:
+                modules = modules.split()
+
+        parser.defaults = dict(target = target, deployment = deployment)
+
+        DeployerClass = cls.deployer_factory( camelcaser(deployment) + "Deployer", modules)
+        logger.info("Instantiating Deployer %s with modules: %s", DeployerClass, ", ".join(modules))
+        return super(DeployerBase, cls).__new__(DeployerClass, options, target, parser = parser)
+        
+    @classmethod
+    def deployer_factory(cls, name,  modules = [], Base = None):
+        import types
+        import importlib
+        _modules = []
+        for mod in modules:
+            if isinstance(mod, types.ModuleType):
+                _modules.append(mod)
+            else:
+                package_name, cls_name = mod.split(":")
+                logger.info("Loading module %s from %s", cls_name, package_name)
+                _package =importlib.import_module(package_name)
+                _modules.append( getattr(_package,cls_name) )
+        kls = type(name,tuple( [Base or cls, DeployBasicFunctionsMixin] + _modules), {})
+        return kls    
+    
+    @classmethod
+    def get_configs(cls, path):
+        _config = path
         configs = [_config]
         _parsers = []
         while True:
@@ -78,15 +130,28 @@ class DeployerBase(object):
                     break
             else:
                 break
+        deployment = _parsers[0].get("environment","deployment")
 
-        del _config, _parser
+        return configs
+
+
+    def __init__(self, options, target = None, parser = None):
+        if os.path.isdir(options.config):
+            options.config = os.path.join(options.config, "deployment.ini")
+        else:
+            options.config =  os.path.abspath(options.config)
+        
+        self.parser = parser or HierarchicalConfigParser(self.get_configs(options.config), defaults = dict(target = target))
+        
+        self.deployment = self.parser.get("environment","deployment")
+
+        self.parser.defaults = dict(target = target, deployment = self.deployment)
+ 
+        self.options = options
 
         self.dryrun = options.dryrun
-        self.dependencies = configs
+        
         self.target = target
-        self.deployment = _parsers[0].get("environment","deployment")
-
-        self.parser  =  HierarchicalConfigParser(configs, dict(target = target, deployment = self.deployment))
        
         self.environment = dict(self.parser.items("environment"))
         self.replacements = dict(self.parser.items("replace"))
@@ -95,8 +160,15 @@ class DeployerBase(object):
 
         self.logger = logging.getLogger("pyplyne.deployer")
 
+        if self.parser.has_section("flows"):
+            self.workflows = self.workflows.copy()
+            flows = self.parser.items("flows")
+            for command, items in flows:
+                self.workflows[command] = items.split()
+            logger.info("Workflows: %s", self.workflows)
+
     def progress(self, msg, *args, **kwargs):
-        self.logger.info(" * " + msg + "\n", *args, **kwargs)
+        self.logger.info(( "TEST" if self.dryrun else "") +  " * " + msg + "\n", *args, **kwargs)
         
     def valid_commands(self):
         for cmd in self.commands:
@@ -109,7 +181,17 @@ class DeployerBase(object):
 
     def perform_command(self, command, args):
         if command in self.valid_commands():
-            getattr(self, command)( *args)
+            try:
+                cmd = getattr(self, command)
+            except:
+                tasks = self.workflows.get(command)
+                self.logger.warn("=" * 60)
+                self.logger.warn("Starting task %s using configuration: %s", command, self.deployment)
+                self.logger.warn("Target path: %s" % self.target)
+                self.logger.warn("=" * 60)
+                self._run_tasks(tasks, test = self.dryrun)
+            else:
+                cmd( *args)
         else:
             print "command not in %s" % list(self.valid_commands())
 
@@ -120,35 +202,22 @@ class DeployerBase(object):
         print "\n\nVariable replacements\n"
         pprint.pprint(self.replacements)
         
-    def deploy(self, test = False):
-        tasks = [ "dirs", "files", "run_scripts"]
+    def run_tasks(self, task, test = False):
+        tasks = self.workflows[task]
         self.logger.warn("=" * 60)
-        self.logger.warn("Starting Deployment procedure using configuration: %s" % self.deployment)
-        self.logger.warn("Target path: %s" % self.target)
-        self.logger.warn("=" * 60)
-        self._run_tasks(tasks)
-
-    def update(self, test = False):
-        tasks = [ "dirs", "files", "run_scripts"]
-        self.logger.warn("=" * 60)
-        self.logger.warn("Starting update procedure using configuration: %s" % self.deployment)
+        self.logger.warn("Starting %s procedure using configuration: %s", task, self.deployment)
         self.logger.warn("Target path: %s" % self.target)
         self.logger.warn("=" * 60)
         self._run_tasks(tasks, test)
-        
-
-    def test(self, test = True):
-        self.deploy( test = True)
 
     def _run_tasks(self, tasks, test = False):
         for task_name in tasks:
             if self.options.stepwise:               
-                answer = raw_input("%sNext Step: %s. Proceed? ( Y/n/s(kip) ) " % ( "TEST! " if test else "", task_name))
+                answer = raw_input("%sNext Step: %s. Proceed? ( Yes/no/skip ) " % ( "TEST! " if test else "", task_name))
                 if answer.lower().startswith("s"):
                     continue
                 if answer.lower().startswith("n"):
                     raise DeploymentAborted()
-
 
             task = getattr(self, "deploy_" + task_name)
 
@@ -160,7 +229,7 @@ class DeployerBase(object):
                     self.logger.exception("Task %s failed", task_name)
                 else:
                     self.logger.error("Task %s failed: %s", task_name, e)
-                answer = raw_input("\nLast step failed. Proceed? ( y/N/s(kip) ) " )
+                answer = raw_input("\nLast step failed. Proceed? ( yes/No/skip )  " )
                 if answer.lower().startswith("s"):
                     continue
                 if not answer.lower().startswith("y"):
@@ -168,56 +237,27 @@ class DeployerBase(object):
                         e = DeploymentException(underlying = e)
                     raise e
 
-    def _run_sub_tasks(self, task_name, argument_sets, test = False):
-        for task_args, task_kwargs in argument_sets:
-            if self.options.stepwise:               
-                answer = raw_input("%sNext task: %s (%s). Proceed? ( Y/n/s(kip) ) " % ( "TEST! " if test else "", task_name), argument_set)
-                if answer.lower().startswith("s"):
-                    continue
-                if answer.lower().startswith("n"):
-                    raise DeploymentAborted()
-
-
-            task = getattr(self, "deploy_" + task_name)
-
-            self.progress("Running task %s (%s, %s)", task_name, ", ".join(task_args), task_kwargs)
-            try:
-                if not test:
-                    task(*task_args, **task_kwargs)
-            except Exception as e:
-                if self.options.verbose:
-                    self.logger.exception("Task %s failed", task_name)
-                else:
-                    self.logger.error("Task %s failed: %s", task_name, e)
-                answer = raw_input("\nLast subtask failed. Proceed with next subtask? ( y/N/s(kip) ) " )
-                if answer.lower().startswith("s"):
-                    continue
-                if not answer.lower().startswith("y"):
-                    if not isinstance(e, DeploymentException):
-                        e = DeploymentException(underlying = e)
-                    raise e
-        
-                    
-    def _run_command(self, cwd, cmdline, test = False, **kwargs):
+    def run_command(self, cwd, cmdline, test = False, **kwargs):
         try:
             self._internal_run_command(cwd,cmdline, test = test, **kwargs)
         except DeploymentException:
             raise
         except Exception as e:
-            raise
-            #raise DeploymentException("Runnning External Command failed", underlying=e)
+            #raise
+            raise DeploymentException("Runnning External Command failed", underlying=e)
             
     def _internal_run_command(self, cwd, cmdline, test = False, expect_returncodes = [None, 0], **kwargs):
-        self.logger.info("** %s> %s\n", os.path.abspath(cwd),
+        self.logger.info("%s** %s> %s\n", "TEST " if self.dryrun or test else "", os.path.abspath(cwd),
                          cmdline if isinstance(cmdline,basestring) else  " ".join([ (str(s) if not " " in s else ("\"%s\"" % s))  for s in cmdline]))
-        if not test:
-            if kwargs.get('shell')==True and not isinstance(cmdline, basestring):
-                cmdline = " ".join(cmdline)
 
-                
-            stderr = StringIO()
-            env = os.environ.copy()
-            env['PATH'] = ":".join( env.get('PATH').split(":") + [ os.path.join(self.target,"bin") ]) 
+        if kwargs.get('shell')==True and not isinstance(cmdline, basestring):
+            cmdline = " ".join(cmdline)
+
+
+        stderr = StringIO()
+        env = os.environ.copy()
+        env['PATH'] = ":".join( env.get('PATH').split(":") + [ os.path.join(self.target,"bin") ]) 
+        if not test and not self.dryrun:
             process = subprocess.Popen(cmdline , stdin = subprocess.PIPE, env = env,
                                        stdout = subprocess.PIPE, stderr = subprocess.STDOUT, cwd = cwd, **kwargs )
 
@@ -248,8 +288,7 @@ class DeployerBase(object):
             if not os.path.exists(_pth):
                 logger.info("Creating directory %s", _pth)
                 os.mkdir(_pth )
-
-                
+              
 class DeployBasicFunctionsMixin(object):   
 
     def deploy_dirs(self,  test = False):
@@ -300,7 +339,7 @@ class DeployBasicFunctionsMixin(object):
                 _pwd = dict(_opts).get('pwd', self.target)
                 if ";" in _call:
                     if not test:
-                        self._run_command(_pwd, _call, shell = True)
+                        self.run_command(_pwd, _call, shell = True)
                 else:
                     
                     _call_list = shlex.split(_call)
@@ -308,51 +347,15 @@ class DeployBasicFunctionsMixin(object):
                     self.progress("Calling script %s in %s", script, _pwd)
                 
                     if not test:
-                        self._run_command(_pwd, _call_list)
+                        self.run_command(_pwd, _call_list)
 
-
-from modules.git import DeployGitMixin
-from modules.setuptools import DeploySetuptoolsMixin
-from modules.turmeric import DeployDatabaseManagementMixin
-from modules.supervisor import DeploySupervisorMixin
-from modules.makotemplates import DeployMakoTemplatesMixin
-
-
-
-class Deployer(DeployerBase, DeployBasicFunctionsMixin, DeployGitMixin,
-               DeploySetuptoolsMixin, DeploySupervisorMixin, DeployDatabaseManagementMixin,
-               DeployMakoTemplatesMixin):
-    
-    def deploy(self, test = False):
-        tasks = [ "dirs", "git_install", "virtualenv", "files", "templates",
-                  "setup_py_build", "setup_py_install", "pip_install", "run_scripts", "online"]
-        self._run_tasks(tasks, test = test)
-
-    def update(self, test = False):
-        tasks = [ "offline", "backup_db", "dirs",  
-                  "git_checkout", "files", "templates",
-                  "setup_py_build", "setup_py_install", "pip_install", "run_scripts", "migrate_db", "online"]
-        self._run_tasks(tasks, test=test)
-
-    def init_system(self, test = False):
-        tasks = ["install_init_script", "install_nginx_conf"]
-        self._run_tasks(tasks, test=test)
-
-    def deploy_install_nginx_conf(self, test = False):
-
-        self._run_command(self.target, ["ln","-s", "nginx.conf", os.path.join("etc", "nginx", "sites-available",self.deployment)], shell = True,
-                          test = test)
-        self._run_command(self.target, [os.path.join("etc", "nginx", "sites-available",self.deployment),
-                                 os.path.join("etc", "nginx", "sites-enabled",self.deployment)], shell = True, test = test)
 
         
 def main(argv=sys.argv, quiet = False):
-    #from optparse import OptionParser
     from argparse import ArgumentParser
     import traceback
     import datetime
     import random
-    #datestr = ''.join(random.choice(string.ascii_uppercase + string.digits) for x in range(6))
     datestr = datetime.datetime.utcnow().isoformat()
 
     try:
@@ -368,9 +371,12 @@ def main(argv=sys.argv, quiet = False):
     logger.setLevel(logging.INFO)
     
     parser = ArgumentParser(description="Deploy a service into a destination path.")
-    parser.add_argument("command", metavar = "command", default = "info", help = "The deployment command to run. ('%s') " % "' / '".join(Deployer.commands), choices = Deployer.commands )
+    parser.add_argument("command", metavar = "command",
+                        default = "info",
+                        help = "The deployment command to run. ('%s') " % "' / '".join(DeployerBase.commands),
+                        choices = list(DeployerBase.commands) )
     parser.add_argument("destination", metavar = "destination", default = "/tmp", help = "The target path to deploy in. It does not need to exist, but you should have rights to create it")
-    parser.add_argument("arguments", metavar = "arguments",nargs="*" , help = "Positional arguments to pass on the the command")
+    parser.add_argument("arguments", metavar = "arg",nargs="*" , help = "Positional arguments to pass on the the command")
     
     parser.add_argument("-c","--config",dest = "config", help = "Deployment configuration file", metavar = "FILE")
     parser.add_argument("-s","--step-by-step",dest = "stepwise", help = "Step by Step processing", action = "store_true")
@@ -385,8 +391,8 @@ def main(argv=sys.argv, quiet = False):
     if not config.command or not config.config:
         parser.print_help()
         sys.exit(0)
-       
-    deployer = Deployer(config, config.destination)
+
+    deployer = DeployerBase(config, config.destination)
 
     try:
         deployer.perform_command(config.command, config.arguments)
