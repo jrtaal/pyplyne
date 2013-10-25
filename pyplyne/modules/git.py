@@ -40,4 +40,6 @@ class DeployGitMixin(object):
             self.run_command(cwd, _call, test=test, shell=False )
             _call = [ "git", "checkout", branch]
             self.run_command(cwd, _call, test=test, shell=False)
+            _call = [ "git", "merge", "origin", branch]
+            self.run_command(cwd, _call, test=test, shell=False)
 
